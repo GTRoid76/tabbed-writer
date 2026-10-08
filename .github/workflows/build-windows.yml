@@ -1,0 +1,51 @@
+# Builds TabbedWriter.exe for Windows on GitHub's own computers.
+# It runs every time the program is updated, and can also be started
+# by hand from the Actions tab ("Run workflow").
+name: Build Windows program
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Get the project files
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install what the program needs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build TabbedWriter.exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name TabbedWriter
+          --icon tabbed-writer.ico
+          --add-data "tabbed-writer.svg;."
+          --hidden-import PySide6.QtSvg
+          main.py
+
+      - name: Keep the .exe so it can be downloaded
+        uses: actions/upload-artifact@v4
+        with:
+          name: TabbedWriter-Windows
+          path: dist/TabbedWriter.exe
+
+      - name: Attach the .exe to a release (for version tags like v1.0)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TabbedWriter.exe
