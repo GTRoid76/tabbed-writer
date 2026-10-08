@@ -37,17 +37,14 @@ The installer puts the program in `~/.local/share/tabbed-writer`, adds **Tabbed 
 
 If the installer says Python couldn't create its private folder, run `sudo apt install python3-venv` and try again.
 
-## Running on Windows
+## Installing on Windows
 
-A ready-to-run Windows version is planned. Until then:
+1. Go to the [Releases page](https://github.com/GTRoid76/tabbed-writer/releases/latest) and download **TabbedWriter.exe**.
+2. Double-click it to run. There's nothing to install.
 
-1. Install Python 3 from [python.org](https://www.python.org/downloads/) (tick **"Add python.exe to PATH"** during setup).
-2. Open a Command Prompt in this project's folder and run:
+The first time, Windows may show a blue **"Windows protected your PC"** box, because the program isn't signed with a paid certificate. Click **More info**, then **Run anyway**. The first launch can take a few seconds while it unpacks.
 
-   ```
-   python -m pip install -r requirements.txt
-   python main.py
-   ```
+Your writing is kept in **Documents\Tabbed Writer**.
 
 ## How it was made
 
