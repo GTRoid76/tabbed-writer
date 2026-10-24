@@ -6,36 +6,25 @@ The book settings follow Amazon KDP's published guidance:
   and Word (.docx) or EPUB files are uploaded.
 - Paperbacks: standard trim sizes (6 x 9 in is the most common), mirrored
   inside/outside margins, and a print PDF.
-
-Needs: Python 3, PySide6, and python-docx (for Word files).
-LibreOffice is optional: it's only used to open .odt files.
-Works on Linux and Windows.
 """
 
-import html as html_text
 import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QSettings, QSizeF, QStandardPaths, Qt, QTimer
+from PySide6.QtCore import QSettings, QSizeF, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
     QFont,
-    QIcon,
     QKeySequence,
-    QPageLayout,
-    QPageSize,
-    QPdfWriter,
     QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
@@ -82,11 +71,6 @@ from PySide6.QtWidgets import (
 
 DOCUMENT_FILE = None
 SUGGESTED_NAME = "Untitled.twp"
-
-# Where your writing is kept. Open and Save as start here.
-DOCUMENTS = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-WRITING_FOLDER = Path(DOCUMENTS or Path.home() / "Documents") / "Tabbed Writer"
-WRITING_FOLDER.mkdir(parents=True, exist_ok=True)
 CONTENT_ROLE = Qt.ItemDataRole.UserRole
 WORDS_ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -98,14 +82,13 @@ app_settings = QSettings("TabbedWriter", "TabbedWriter")
 DEFAULT_WORDS_PER_PAGE = 250
 
 # The same three kinds of font Kindle Create offers (serif, sans serif,
-# monospace). Linux uses the free Liberation fonts; Windows and Mac use
-# Times New Roman, Arial and Courier New, which they were designed to match.
-ON_LINUX = sys.platform.startswith("linux")
-LINUX_FONTS = {"Serif": "Liberation Serif", "Sans serif": "Liberation Sans", "Monospace": "Liberation Mono"}
-OTHER_FONTS = {"Serif": "Times New Roman", "Sans serif": "Arial", "Monospace": "Courier New"}
-FONT_CHOICES = LINUX_FONTS if ON_LINUX else OTHER_FONTS
-FONT_LABELS = {family: label for fonts in (LINUX_FONTS, OTHER_FONTS) for label, family in fonts.items()}
-DEFAULT_FONT = FONT_CHOICES["Serif"]
+# monospace), using the free Liberation fonts that come with Linux Mint.
+FONT_CHOICES = {
+    "Serif": "Liberation Serif",
+    "Sans serif": "Liberation Sans",
+    "Monospace": "Liberation Mono",
+}
+DEFAULT_FONT = "Liberation Serif"
 DEFAULT_SIZE = 12
 SIZE_CHOICES = ["8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "36"]
 
@@ -551,31 +534,13 @@ def load_document(path):
 
 
 # ---------------------------------------------------------------------------
-# LibreOffice (optional: only used to open .odt files)
+# LibreOffice helpers (used for .docx, .epub, .pdf and for opening files)
 # ---------------------------------------------------------------------------
 
-def find_libreoffice():
-    found = shutil.which("soffice") or shutil.which("libreoffice")
-    if found:
-        return found
-    for place in (
-        r"C:\Program Files\LibreOffice\program\soffice.exe",
-        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    ):
-        if Path(place).exists():
-            return place
-    return None
-
-
 def libreoffice_convert(source, target_format, out_dir):
-    office = find_libreoffice()
+    office = shutil.which("soffice") or shutil.which("libreoffice")
     if office is None:
-        raise RuntimeError(
-            "Opening .odt files uses LibreOffice, which isn't installed on this computer.\n\n"
-            "You can get it free from libreoffice.org, or save the file as a Word "
-            "document (.docx) in the program that made it, then open that."
-        )
+        raise RuntimeError("This needs LibreOffice, which wasn't found on this computer.")
     QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     try:
         with tempfile.TemporaryDirectory() as profile:
@@ -592,7 +557,6 @@ def libreoffice_convert(source, target_format, out_dir):
                 ],
                 capture_output=True,
                 timeout=180,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
     finally:
         QApplication.restoreOverrideCursor()
@@ -758,545 +722,6 @@ def finish_odt(file_name, page, title):
 
 
 # ---------------------------------------------------------------------------
-# Word and EPUB files, written directly (no LibreOffice needed)
-#
-# A "book" here is a plain list of items:
-#   {"type": "paragraph", "heading": 0 or 1, "align": "left"/"center"/"right"/"justify",
-#    "indent": True/False, "page_break": True/False,
-#    "runs": [{"text", "bold", "italic", "underline", "color", "highlight", "font", "size"}]}
-#   {"type": "table", "border": "#rrggbb" or None,
-#    "rows": [[{"background": "#rrggbb" or None, "paragraphs": [paragraph, ...]}, ...], ...]}
-# ---------------------------------------------------------------------------
-
-WORD_FONTS = {
-    "Liberation Serif": "Times New Roman",
-    "Liberation Sans": "Arial",
-    "Liberation Mono": "Courier New",
-}
-
-
-GENERIC_FONTS = {
-    "Liberation Serif": "serif",
-    "Times New Roman": "serif",
-    "Liberation Sans": "sans-serif",
-    "Arial": "sans-serif",
-    "Liberation Mono": "monospace",
-    "Courier New": "monospace",
-}
-
-
-def word_font(family):
-    return WORD_FONTS.get(family, family)
-
-
-# ----- Word (.docx) --------------------------------------------------------
-
-def write_docx(book, file_name, page, trim_sizes, title, ebook):
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
-    from docx.shared import Inches, Pt, RGBColor
-
-    alignments = {
-        "left": WD_ALIGN_PARAGRAPH.LEFT,
-        "center": WD_ALIGN_PARAGRAPH.CENTER,
-        "right": WD_ALIGN_PARAGRAPH.RIGHT,
-        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
-    }
-
-    document = Document()
-    document.core_properties.title = title
-
-    width, height = trim_sizes[page["trim"]]
-    section = document.sections[0]
-    section.page_width = Inches(width)
-    section.page_height = Inches(height)
-    section.top_margin = Inches(page["top"])
-    section.bottom_margin = Inches(page["bottom"])
-    section.left_margin = Inches(page["inside"])
-    section.right_margin = Inches(page["outside"])
-    if ebook:
-        mirror = OxmlElement("w:mirrorMargins")
-        document.settings.element.append(mirror)
-
-    normal = document.styles["Normal"]
-    normal.font.name = "Times New Roman"
-    normal.font.size = Pt(12)
-    normal.paragraph_format.space_before = Pt(0)
-    normal.paragraph_format.space_after = Pt(0 if ebook else 6)
-
-    heading_style = document.styles["Heading 1"]
-    heading_style.font.size = Pt(18)
-    heading_style.font.bold = True
-    heading_style.font.color.rgb = RGBColor(0, 0, 0)
-    heading_style.font.name = "Times New Roman"
-    heading_style.paragraph_format.space_before = Pt(0)
-    heading_style.paragraph_format.space_after = Pt(18)
-
-    def shade(properties, color):
-        shading = OxmlElement("w:shd")
-        shading.set(qn("w:val"), "clear")
-        shading.set(qn("w:color"), "auto")
-        shading.set(qn("w:fill"), color.lstrip("#").upper())
-        properties.append(shading)
-
-    def fill_paragraph(paragraph, item):
-        if item["heading"]:
-            paragraph.style = document.styles["Heading 1"]
-        paragraph.alignment = alignments.get(item["align"], WD_ALIGN_PARAGRAPH.LEFT)
-        if item["indent"]:
-            paragraph.paragraph_format.first_line_indent = Inches(0.2)
-        if item["page_break"]:
-            paragraph.paragraph_format.page_break_before = True
-        for run_data in item["runs"]:
-            pieces = run_data["text"].split(" ")
-            for number, piece in enumerate(pieces):
-                if number:
-                    paragraph.add_run().add_break(WD_BREAK.LINE)
-                if not piece:
-                    continue
-                run = paragraph.add_run(piece)
-                run.bold = run_data["bold"] or None
-                run.italic = run_data["italic"] or None
-                run.underline = run_data["underline"] or None
-                if run_data["font"]:
-                    run.font.name = word_font(run_data["font"])
-                if run_data["size"]:
-                    run.font.size = Pt(run_data["size"])
-                if run_data["color"]:
-                    run.font.color.rgb = RGBColor.from_string(run_data["color"].lstrip("#").upper())
-                if run_data["highlight"]:
-                    shade(run._element.get_or_add_rPr(), run_data["highlight"])
-
-    def set_table_borders(table, color):
-        table_properties = table._tbl.tblPr
-        borders = OxmlElement("w:tblBorders")
-        for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
-            line = OxmlElement(f"w:{side}")
-            line.set(qn("w:val"), "single")
-            line.set(qn("w:sz"), "4")
-            line.set(qn("w:space"), "0")
-            line.set(qn("w:color"), (color or "#000000").lstrip("#").upper())
-            borders.append(line)
-        table_properties.append(borders)
-
-    for item in book:
-        if item["type"] == "paragraph":
-            fill_paragraph(document.add_paragraph(), item)
-            continue
-        rows = item["rows"]
-        columns = max((len(row) for row in rows), default=0)
-        if not columns:
-            continue
-        table = document.add_table(rows=len(rows), cols=columns)
-        set_table_borders(table, item["border"])
-        for row_number, row in enumerate(rows):
-            for column_number, cell_data in enumerate(row):
-                cell = table.cell(row_number, column_number)
-                if cell_data["background"]:
-                    shade(cell._tc.get_or_add_tcPr(), cell_data["background"])
-                paragraphs = cell_data["paragraphs"] or []
-                for number, paragraph_data in enumerate(paragraphs):
-                    paragraph = cell.paragraphs[0] if number == 0 else cell.add_paragraph()
-                    fill_paragraph(paragraph, dict(paragraph_data, indent=False, page_break=False))
-        document.add_paragraph()
-
-    # Word documents always start with one empty paragraph; remove it.
-    first = document.paragraphs[0]
-    if not first.text and len(document.paragraphs) > 1:
-        first._element.getparent().remove(first._element)
-
-    document.save(file_name)
-
-
-# ----- EPUB ----------------------------------------------------------------
-
-EPUB_CSS = """body { font-family: serif; margin: 0 5%; }
-p { margin: 0 0 0.6em 0; }
-p.book { margin: 0; text-indent: 1.2em; }
-p.noindent { text-indent: 0; }
-h1 { font-size: 1.5em; font-weight: bold; margin: 1em 0 1em 0; }
-h1.center { text-align: center; }
-.center { text-align: center; }
-.right { text-align: right; }
-.justify { text-align: justify; }
-.u { text-decoration: underline; }
-table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
-td { border: 1px solid #000; padding: 0.25em; vertical-align: top; }
-td p { margin: 0; text-indent: 0; }
-"""
-
-
-def escape(text):
-    return html_text.escape(text, quote=True)
-
-
-def epub_runs(runs):
-    out = []
-    for run in runs:
-        text = "<br/>".join(escape(piece) for piece in run["text"].split(" "))
-        if not text:
-            continue
-        styles = []
-        if run["color"]:
-            styles.append(f"color: {run['color']}")
-        if run["highlight"]:
-            styles.append(f"background-color: {run['highlight']}")
-        generic = GENERIC_FONTS.get(run["font"] or "", "serif")
-        if generic != "serif":
-            styles.append(f"font-family: {generic}")
-        if run["underline"]:
-            text = f'<span class="u">{text}</span>'
-        if run["italic"]:
-            text = f"<em>{text}</em>"
-        if run["bold"]:
-            text = f"<strong>{text}</strong>"
-        if styles:
-            text = f'<span style="{"; ".join(styles)}">{text}</span>'
-        out.append(text)
-    return "".join(out)
-
-
-def epub_paragraph(item, ebook):
-    content = epub_runs(item["runs"])
-    classes = []
-    if item["heading"]:
-        if ebook or item["align"] == "center":
-            classes.append("center")
-        attribute = f' class="{" ".join(classes)}"' if classes else ""
-        return f"<h1{attribute}>{content or '&#160;'}</h1>"
-    if ebook:
-        # KDP: no space between paragraphs; indented unless centered or right-aligned.
-        classes.append("book")
-        if not item["indent"]:
-            classes.append("noindent")
-    if item["align"] in ("center", "right", "justify"):
-        classes.append(item["align"])
-    attribute = f' class="{" ".join(classes)}"' if classes else ""
-    return f"<p{attribute}>{content or '&#160;'}</p>"
-
-
-def epub_table(item, ebook):
-    border = item["border"] or "#000000"
-    lines = ["<table>"]
-    for row in item["rows"]:
-        lines.append("<tr>")
-        for cell in row:
-            style = [f"border-color: {border}"]
-            if cell["background"]:
-                style.append(f"background-color: {cell['background']}")
-            inside = "".join(
-                epub_paragraph(dict(p, heading=0, indent=False), False) for p in cell["paragraphs"]
-            ) or "<p>&#160;</p>"
-            lines.append(f'<td style="{"; ".join(style)}">{inside}</td>')
-        lines.append("</tr>")
-    lines.append("</table>")
-    return "\n".join(lines)
-
-
-def split_chapters(book, fallback_title):
-    chapters = []
-    for item in book:
-        starts_chapter = item["type"] == "paragraph" and item["heading"] == 1
-        if starts_chapter or not chapters:
-            title = "".join(run["text"] for run in item["runs"]).strip() if starts_chapter else ""
-            chapters.append({"title": title or fallback_title, "items": []})
-        chapters[-1]["items"].append(item)
-    return chapters or [{"title": fallback_title, "items": []}]
-
-
-def xhtml_page(title, body):
-    return (
-        '<?xml version="1.0" encoding="utf-8"?>\n'
-        "<!DOCTYPE html>\n"
-        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" '
-        'lang="en" xml:lang="en">\n'
-        f"<head><meta charset=\"utf-8\"/><title>{escape(title)}</title>"
-        '<link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
-        f"<body>\n{body}\n</body>\n</html>\n"
-    )
-
-
-def write_epub(book, file_name, title, author, ebook):
-    chapters = split_chapters(book, title)
-    book_id = f"urn:uuid:{uuid.uuid4()}"
-    modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    pages = []
-    for number, chapter in enumerate(chapters, start=1):
-        body = "\n".join(
-            epub_paragraph(item, ebook) if item["type"] == "paragraph" else epub_table(item, ebook)
-            for item in chapter["items"]
-        )
-        pages.append((f"chapter{number:03}.xhtml", chapter["title"], xhtml_page(chapter["title"], body)))
-
-    nav_items = "\n".join(
-        f'<li><a href="{name}">{escape(chapter_title)}</a></li>' for name, chapter_title, _ in pages
-    )
-    nav = xhtml_page(
-        "Contents",
-        f'<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>\n{nav_items}\n</ol></nav>',
-    )
-
-    manifest = "\n".join(
-        f'<item id="c{number}" href="{name}" media-type="application/xhtml+xml"/>'
-        for number, (name, _, _) in enumerate(pages, start=1)
-    )
-    spine = "\n".join(f'<itemref idref="c{number}"/>' for number in range(1, len(pages) + 1))
-    creator = f"<dc:creator>{escape(author)}</dc:creator>\n" if author else ""
-    opf = f"""<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="en">
-<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:identifier id="bookid">{book_id}</dc:identifier>
-<dc:title>{escape(title)}</dc:title>
-{creator}<dc:language>en</dc:language>
-<meta property="dcterms:modified">{modified}</meta>
-</metadata>
-<manifest>
-<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-<item id="css" href="style.css" media-type="text/css"/>
-{manifest}
-</manifest>
-<spine toc="ncx">
-{spine}
-</spine>
-</package>
-"""
-
-    nav_points = "\n".join(
-        f'<navPoint id="n{number}" playOrder="{number}"><navLabel><text>{escape(chapter_title)}</text>'
-        f'</navLabel><content src="{name}"/></navPoint>'
-        for number, (name, chapter_title, _) in enumerate(pages, start=1)
-    )
-    ncx = f"""<?xml version="1.0" encoding="utf-8"?>
-<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-<head><meta name="dtb:uid" content="{book_id}"/></head>
-<docTitle><text>{escape(title)}</text></docTitle>
-<navMap>
-{nav_points}
-</navMap>
-</ncx>
-"""
-
-    container = """<?xml version="1.0" encoding="utf-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
-</container>
-"""
-
-    with zipfile.ZipFile(file_name, "w") as target:
-        target.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-        target.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
-        target.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
-        target.writestr("OEBPS/nav.xhtml", nav, compress_type=zipfile.ZIP_DEFLATED)
-        target.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
-        target.writestr("OEBPS/style.css", EPUB_CSS, compress_type=zipfile.ZIP_DEFLATED)
-        for name, _, page in pages:
-            target.writestr(f"OEBPS/{name}", page, compress_type=zipfile.ZIP_DEFLATED)
-
-
-# ----- Reading Word files --------------------------------------------------
-
-def docx_to_html(file_name):
-    """Turn a Word file into simple HTML. Heading 1 paragraphs become <h1>."""
-    from docx import Document
-    from docx.table import Table
-    from docx.text.paragraph import Paragraph
-
-    document = Document(file_name)
-
-    def paragraph_html(paragraph):
-        style_name = (paragraph.style.name if paragraph.style is not None else "") or ""
-        tag = "h1" if style_name in ("Heading 1", "Title") else "p"
-        alignment = paragraph.alignment
-        align = ""
-        if alignment is not None:
-            name = str(alignment).split(".")[-1].split(" ")[0].lower()
-            if name.startswith("center"):
-                align = "center"
-            elif name.startswith("right"):
-                align = "right"
-            elif name.startswith("justify"):
-                align = "justify"
-        styles = []
-        if align:
-            styles.append(f"text-align: {align}")
-        if paragraph.paragraph_format.page_break_before:
-            styles.append("page-break-before: always")
-        pieces = []
-        for run in paragraph.runs:
-            text = escape(run.text).replace("\n", "<br/>").replace("\t", "&#160;&#160;&#160;&#160;")
-            if not text:
-                continue
-            run_styles = []
-            if run.font.color is not None and run.font.color.type is not None and run.font.color.rgb is not None:
-                run_styles.append(f"color: #{run.font.color.rgb}")
-            if run.font.size:
-                run_styles.append(f"font-size: {run.font.size.pt:g}pt")
-            if run.underline:
-                text = f"<u>{text}</u>"
-            if run.italic:
-                text = f"<i>{text}</i>"
-            if run.bold:
-                text = f"<b>{text}</b>"
-            if run_styles:
-                text = f'<span style="{"; ".join(run_styles)}">{text}</span>'
-            pieces.append(text)
-        style_attribute = f' style="{"; ".join(styles)}"' if styles else ""
-        return f"<{tag}{style_attribute}>{''.join(pieces)}</{tag}>"
-
-    def table_html(table):
-        rows = []
-        for row in table.rows:
-            cells = "".join(
-                "<td>" + "".join(paragraph_html(p) for p in cell.paragraphs) + "</td>"
-                for cell in row.cells
-            )
-            rows.append(f"<tr>{cells}</tr>")
-        return '<table border="1" cellspacing="0" cellpadding="4" width="100%">' + "".join(rows) + "</table>"
-
-    parts = []
-    body = document.element.body
-    for child in body.iterchildren():
-        tag = child.tag.split("}")[-1]
-        if tag == "p":
-            parts.append(paragraph_html(Paragraph(child, document)))
-        elif tag == "tbl":
-            parts.append(table_html(Table(child, document)))
-    return "<html><body>" + "\n".join(parts) + "</body></html>"
-
-
-# ----- Turning the document into a "book" list ------------------------------
-
-def brush_color(text_format, property_id):
-    if text_format.hasProperty(property_id):
-        brush = text_format.brushProperty(property_id)
-        if brush.style() != Qt.BrushStyle.NoBrush:
-            return brush.color().name()
-    return None
-
-
-def alignment_name(block_format):
-    alignment = block_format.alignment()
-    if alignment & Qt.AlignmentFlag.AlignHCenter:
-        return "center"
-    if alignment & Qt.AlignmentFlag.AlignRight:
-        return "right"
-    if alignment & Qt.AlignmentFlag.AlignJustify:
-        return "justify"
-    return "left"
-
-
-def block_to_paragraph(block):
-    block_format = block.blockFormat()
-    encoded = block.text().encode("utf-16-le")
-    runs = []
-    for part in block.textFormats():
-        piece = encoded[2 * part.start: 2 * (part.start + part.length)].decode("utf-16-le", errors="replace")
-        if not piece:
-            continue
-        text_format = part.format
-        font = text_format.font()
-        family = font.family()
-        runs.append({
-            "text": piece,
-            "bold": font.bold(),
-            "italic": font.italic(),
-            "underline": text_format.fontUnderline(),
-            "color": brush_color(text_format, QTextFormat.Property.ForegroundBrush),
-            "highlight": brush_color(text_format, QTextFormat.Property.BackgroundBrush),
-            "font": family if family in FONT_LABELS and FONT_LABELS[family] != "Serif" else None,
-            "size": text_format.fontPointSize() if text_format.fontPointSize() > 0 else 0,
-        })
-    return {
-        "type": "paragraph",
-        "heading": 1 if block_format.headingLevel() == 1 else 0,
-        "align": alignment_name(block_format),
-        "indent": block_format.textIndent() > 0,
-        "page_break": bool(block_format.pageBreakPolicy() & QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore),
-        "runs": runs,
-    }
-
-
-def table_to_item(document, table):
-    rows = []
-    for row in range(table.rows()):
-        cells = []
-        for column in range(table.columns()):
-            cell = table.cellAt(row, column)
-            paragraphs = []
-            block = document.findBlock(cell.firstPosition())
-            while block.isValid() and block.position() <= cell.lastPosition():
-                paragraphs.append(block_to_paragraph(block))
-                block = block.next()
-            cells.append({
-                "background": brush_color(cell.format(), QTextFormat.Property.BackgroundBrush),
-                "paragraphs": paragraphs,
-            })
-        rows.append(cells)
-    return {
-        "type": "table",
-        "border": brush_color(table.format(), QTextFormat.Property.FrameBorderBrush),
-        "rows": rows,
-    }
-
-
-def document_to_book(document):
-    book = []
-    block = document.begin()
-    while block.isValid():
-        table = QTextCursor(block).currentTable()
-        if table is not None:
-            book.append(table_to_item(document, table))
-            end = table.lastPosition()
-            while block.isValid() and block.position() <= end:
-                block = block.next()
-            continue
-        book.append(block_to_paragraph(block))
-        block = block.next()
-    # Leave out empty paragraphs at the very end.
-    while book and book[-1]["type"] == "paragraph" and not "".join(r["text"] for r in book[-1]["runs"]).strip():
-        book.pop()
-    return book
-
-
-# ----- PDF (made by Qt itself) ----------------------------------------------
-
-def write_pdf(copy, file_name, title):
-    width, height = TRIM_SIZES.get(page_settings["trim"], TRIM_SIZES[STANDARD_PAGE["trim"]])
-    writer = QPdfWriter(file_name)
-    writer.setTitle(title)
-    writer.setCreator("Tabbed Writer")
-    writer.setPageLayout(QPageLayout(
-        QPageSize(QSizeF(width, height), QPageSize.Unit.Inch, "", QPageSize.SizeMatchPolicy.ExactMatch),
-        QPageLayout.Orientation.Portrait,
-        QMarginsF(page_settings["inside"], page_settings["top"], page_settings["outside"], page_settings["bottom"]),
-        QPageLayout.Unit.Inch,
-    ))
-    text_width, text_height = page_text_size()
-    copy.setDocumentMargin(0)
-    copy.setPageSize(QSizeF(text_width, text_height))
-    copy.print_(writer)
-
-
-def word_support_missing():
-    try:
-        import docx  # noqa: F401
-        return False
-    except ImportError:
-        return True
-
-
-WORD_MISSING_MESSAGE = (
-    "Word (.docx) files need the free python-docx add-on, which isn't installed.\n\n"
-    "To add it, run this in a terminal:\n"
-    "  ~/.local/share/tabbed-writer/.venv/bin/pip install python-docx"
-)
-
-
-# ---------------------------------------------------------------------------
 # Saving copies (.docx, .epub, .pdf, .odt, .txt)
 # ---------------------------------------------------------------------------
 
@@ -1375,42 +800,37 @@ def write_copy(file_name):
         window.statusBar().showMessage(f"Saved a copy as {target.name}", 4000)
         return
 
-    if target.suffix == ".docx" and word_support_missing():
-        QMessageBox.warning(window, "Save failed", WORD_MISSING_MESSAGE)
-        return
-
     window.statusBar().showMessage(f"Saving {target.name}…")
-    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-    ebook = document_kind == "ebook"
     try:
-        if target.suffix == ".pdf":
-            write_pdf(copy, str(target), target.stem)
-        elif target.suffix == ".docx":
-            write_docx(document_to_book(copy), str(target), page_settings, TRIM_SIZES, target.stem, ebook)
-        elif target.suffix == ".epub":
-            write_epub(document_to_book(copy), str(target), target.stem, "", ebook)
-        else:
-            with tempfile.TemporaryDirectory() as work:
-                odt = Path(work) / (target.stem + ".odt")
-                writer = QTextDocumentWriter(str(odt))
-                writer.setFormat(b"odf")
-                if not writer.write(copy):
-                    raise RuntimeError("The file could not be written.")
-                finish_odt(odt, page_settings, target.stem)
-                shutil.copyfile(odt, target)
+        with tempfile.TemporaryDirectory() as work:
+            odt = Path(work) / (target.stem + ".odt")
+            writer = QTextDocumentWriter(str(odt))
+            writer.setFormat(b"odf")
+            if not writer.write(copy):
+                raise RuntimeError("The file could not be written.")
+            finish_odt(odt, page_settings, target.stem)
+
+            if target.suffix == ".odt":
+                result = odt
+            else:
+                out_dir = Path(work) / "out"
+                out_dir.mkdir()
+                libreoffice_convert(odt, target.suffix[1:], out_dir)
+                result = out_dir / (target.stem + target.suffix)
+                if not result.exists():
+                    raise RuntimeError("LibreOffice couldn't make that kind of file.")
+            shutil.copyfile(result, target)
     except Exception as problem:
-        QApplication.restoreOverrideCursor()
         window.statusBar().clearMessage()
         QMessageBox.warning(window, "Save failed", str(problem))
         return
-    QApplication.restoreOverrideCursor()
     window.statusBar().showMessage(f"Saved a copy as {target.name}", 4000)
 
 
 def save_as_document():
     global DOCUMENT_FILE
     if DOCUMENT_FILE is None:
-        start = WRITING_FOLDER / SUGGESTED_NAME
+        start = Path.home() / "Documents" / SUGGESTED_NAME
     else:
         start = DOCUMENT_FILE
     file_name, chosen = QFileDialog.getSaveFileName(
@@ -1506,18 +926,17 @@ def tabs_from_html(html):
     return tabs
 
 
-def open_document(file_name=None):
+def open_document():
     global DOCUMENT_FILE, saved_snapshot, SUGGESTED_NAME, page_settings
     if not ok_to_discard():
         return
-    if not isinstance(file_name, str):
-        file_name, _ = QFileDialog.getOpenFileName(
-            window,
-            "Open",
-            str(WRITING_FOLDER),
-            "All supported (*.twp *.docx *.odt *.txt);;Tabbed Writer document (*.twp);;"
-            "Word document (*.docx);;OpenDocument text (*.odt);;Plain text (*.txt)",
-        )
+    file_name, _ = QFileDialog.getOpenFileName(
+        window,
+        "Open",
+        str(Path.home() / "Documents"),
+        "All supported (*.twp *.docx *.odt *.txt);;Tabbed Writer document (*.twp);;"
+        "Word document (*.docx);;OpenDocument text (*.odt);;Plain text (*.txt)",
+    )
     if not file_name:
         return
     path = Path(file_name)
@@ -1531,10 +950,6 @@ def open_document(file_name=None):
             if kind == ".txt":
                 tabs = [{"title": "Tab 1", "text": html_from_plain_text(
                     path.read_text(encoding="utf-8", errors="replace"))}]
-            elif kind == ".docx":
-                if word_support_missing():
-                    raise RuntimeError(WORD_MISSING_MESSAGE)
-                tabs = tabs_from_html(docx_to_html(str(path)))
             else:
                 tabs = tabs_from_html(html_from_office_file(path))
             page_settings = dict(STANDARD_PAGE)
@@ -1822,21 +1237,6 @@ class TabList(QTreeWidget):
 
 
 app = QApplication(sys.argv)
-app.setDesktopFileName("tabbed-writer")
-for icon_file in (
-    Path(__file__).with_name("tabbed-writer.svg"),
-    Path.home() / ".local/share/icons/hicolor/scalable/apps/tabbed-writer.svg",
-):
-    if icon_file.exists():
-        app.setWindowIcon(QIcon(str(icon_file)))
-        break
-
-# Documents written on one system show the matching fonts on the other.
-for label in LINUX_FONTS:
-    if ON_LINUX:
-        QFont.insertSubstitution(OTHER_FONTS[label], LINUX_FONTS[label])
-    else:
-        QFont.insertSubstitution(LINUX_FONTS[label], OTHER_FONTS[label])
 
 window = MainWindow()
 window.setWindowTitle("Untitled - Tabbed Writer")
@@ -2038,7 +1438,11 @@ def set_size_choice(size):
 
 
 def update_format_boxes(text_format):
-    font_box.setCurrentText(FONT_LABELS.get(text_format.font().family(), "Serif"))
+    current_family = text_format.font().family()
+    font_box.setCurrentText("Serif")
+    for label, family in FONT_CHOICES.items():
+        if family == current_family:
+            font_box.setCurrentText(label)
     size = text_format.fontPointSize()
     if size > 0:
         size_box.setCurrentText(str(int(size)))
@@ -2170,7 +1574,7 @@ for action, letter, style in [
 
 for action, letter, look in [
     (text_color_action, "A", "QToolButton { color: #c62828; font-weight: bold; }"),
-    (highlight_action, "A", "QToolButton { background: #fdf3c4; color: black; font-weight: bold; }"),
+        (highlight_action, "A", "QToolButton { background: #fdf3c4; color: black; font-weight: bold; }"),
 ]:
     action.setIconText(letter)
     action.setToolTip(action.text().replace("…", ""))
@@ -2187,8 +1591,6 @@ show_word_count_action.setChecked(
     str(app_settings.value("show_word_count", "false")).lower() == "true"
 )
 update_counts()
-if len(sys.argv) > 1:
-    open_document(sys.argv[1])
 window.resize(1100, 700)
 window.show()
 editor.setFocus()
