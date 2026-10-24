@@ -10,16 +10,27 @@ Tabbed Writer is free and open source, and runs on Linux and Windows.
 - **Word count panel:** each tab's word count and the total, updated as you type (View → Show word count). Press **Ctrl+Shift+C** for a quick summary.
 - **Page view:** you write on a white sheet sized to your page setup, with "Page X of Y" at the bottom.
 - **Two kinds of document:**
-  - **New:** an everyday document with ordinary word-processor settings.
-  - **New eBook:** follows the KDP and B&N rules. Paragraphs get a 0.2 inch first-line indent with no extra spacing, and each tab becomes a centered "Heading 1" chapter title on a new page, which builds the eBook's table of contents.
-- **Formatting:** serif, sans serif and monospace fonts (the same three styles Kindle Create offers), sizes, bold, italic, underline, alignment, text and highlight colors.
+  - **New:** an everyday document with ordinary word-processor settings, saved as .odt by default.
+  - **New eBook:** a book project saved as .twp, following the KDP and B&N rules. Paragraphs get a 0.2 inch first-line indent with no extra spacing, and each tab becomes a centered "Heading 1" chapter title on a new page, which builds the eBook's table of contents.
+- **Formatting:** paragraph styles (Normal text, Title, Subtitle, Headings 1–3), serif, sans serif and monospace fonts (the same three styles Kindle Create offers), sizes, bold, italic, underline, strikethrough, superscript and subscript, text and highlight colors, alignment, indents, line spacing, and clear formatting.
+- **Lists:** bulleted and numbered lists; Tab and Shift+Tab move items in and out.
+- **Spell check:** red underlines as you type, with suggestions, "Add to dictionary" and "Ignore" on right-click. Works offline.
+- **Find and replace** (Ctrl+F, Ctrl+H), across one tab or all of them.
+- **Pictures, links and horizontal lines** (Insert menu). Right-click a picture to resize it; Ctrl+click a link to open it.
 - **Tables:** insert a table, then right-click inside it to add or remove rows and columns, or change cell and border colors.
 - **Page breaks and line breaks** (Ctrl+Enter and Shift+Enter).
+- **Printing** (Ctrl+P), with optional **page numbers** for printing, PDF and Word.
 - **Page setup:** KDP paperback trim sizes (6 x 9 in by default for eBooks, Letter for normal documents) with inside and outside margins.
 - **Saving:**
-  - **.twp** is Tabbed Writer's own format, the one that keeps your tabs.
-  - **Word (.docx), EPUB, PDF, OpenDocument (.odt) and plain text (.txt)** are saved as copies, with each tab's name turned into a chapter heading.
-- **Opening:** .twp, Word (.docx) and .txt files. Chapter headings in a Word file come in as separate tabs. Opening .odt files works too if LibreOffice is installed.
+  - **Everyday documents** are saved as **OpenDocument (.odt)**, the open standard used by LibreOffice, or as **Word (.docx)**. Tabbed Writer quietly keeps your tabs inside its own .odt files, so they reopen exactly as you left them, while other programs simply see a normal document.
+  - **eBooks** are saved as **.twp**, Tabbed Writer's book-project format.
+  - **PDF, EPUB and plain text (.txt)** are saved as copies, with each tab's name turned into a heading.
+- **Opening:** .twp, .odt, Word (.docx) and .txt files. Chapter headings in a Word file come in as separate tabs. Opening .odt files made by other programs uses LibreOffice, if it's installed.
+- **Several documents at once:** File → New window (Ctrl+Shift+N) and File → Open in new window….
+- **Never lose work:** documents save themselves every few minutes, unsaved work is recovered after a crash, and previous versions are kept (File → Version history).
+- **Open recent**, **full screen** (F11), and a list of **keyboard shortcuts** (Ctrl+/).
+- **Preferences:** choose your writing folder (for example, inside Dropbox), autosave timing, and how many previous versions to keep.
+- Fully offline: nothing is ever sent over the internet.
 - Warns you before closing, opening or starting a new document with unsaved changes.
 
 ## Installing on Linux
@@ -48,7 +59,7 @@ Your writing is kept in **Documents\Tabbed Writer**.
 
 ## How it was made
 
-Tabbed Writer was designed, directed and tested by **Shannon L. Walden**, with the code written with the help of **Claude**, an AI assistant made by Anthropic.
+Tabbed Writer was designed, directed and tested by **[your name]**, with the code written with the help of **Claude**, an AI assistant made by Anthropic.
 
 ## License
 
