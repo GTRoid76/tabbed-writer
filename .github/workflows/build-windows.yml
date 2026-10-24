@@ -36,6 +36,7 @@ jobs:
           --icon tabbed-writer.ico
           --add-data "tabbed-writer.svg;."
           --hidden-import PySide6.QtSvg
+          --collect-data spellchecker
           main.py
 
       - name: Keep the .exe so it can be downloaded
